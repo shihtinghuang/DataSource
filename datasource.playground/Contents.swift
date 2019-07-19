@@ -7,157 +7,223 @@ extension UIView: AutolayoutView {}
 extension UITableViewCell: CellIdentifiable {}
 extension UICollectionViewCell: CellIdentifiable {}
 
-protocol HomeContentItem {
-}
-
+// Root protocol of content item
 protocol ContentItem: Hashable {
-    var title: String { get set }
-    var subtitle: String { get set }
-    var imageUrl: String { get set }
+    var id: String { get }
+    static var cellType: ContentConfigurable.Type { get }
 }
 
+/// Type erasured content item
+struct AnyContentItem<T: ContentItem>: ContentItem {
+    var id: String {
+        return base.id
+    }
+    static var cellType: ContentConfigurable.Type {
+        return T.cellType
+    }
 
-struct AnyContentItem {
-    var base: Any
-
-    init<T>(_ base: T) where T: ContentItem {
+    let base: T
+    init(_ base: T) {
         self.base = base
     }
 }
 
-extension AnyContentItem: ContentItem {
-    var title: String {
-        get {
-            
-        }
-        set {
-
-        }
-    }
-
-    var subtitle: String {
-        get {
-
-        }
-        set {
-
-        }
-    }
-
-    var imageUrl: String {
-        get {
-
-        }
-        set {
-
-        }
-    }
-
-    static func == (lhs: AnyContentItem, rhs: AnyContentItem) -> Bool {
-
-    }
-
-
+protocol FeaturableContentItem {
+    var id: String { get }
 }
 
-protocol ShowcaseItem {
-    var title: String { get set }
-    var contentItems: [AnyContentItem] { get set }
+extension Array where Element: FeaturableContentItem {
+    func features() -> [FeatureContentItem] {
+        return self.map { FeatureContentItem($0) }
+    }
 }
 
-struct TitleContentItem: ContentItem, Hashable {
+extension Array where Element: ContentItem {
+    func wrap() -> [AnyContentItem<Element>] {
+        return self.map { AnyContentItem($0) }
+    }
+}
+
+struct VideoContentItem: ContentItem, FeaturableContentItem {
+    var id: String
     var title: String
     var subtitle: String
     var imageUrl: String
+    static var cellType: ContentConfigurable.Type { return VideoTitleThumnailCell.self }
+    // Convivenet
+    static func video(id: String, title: String, subtitle: String, imageUrl: String) -> VideoContentItem {
+        return VideoContentItem(id: id, title: title, subtitle: subtitle, imageUrl: imageUrl)
+    }
 }
 
-struct BookContentItem: ContentItem, Hashable {
+struct BookContentItem: ContentItem, FeaturableContentItem {
+    var id: String
     var title: String
     var subtitle: String
     var imageUrl: String
+    static var cellType: ContentConfigurable.Type { return BookTitleThumbnailCell.self }
+    // Convivenet
+    static func book(id: String, title: String, subtitle: String, imageUrl: String) -> BookContentItem {
+        return BookContentItem(id: id, title: title, subtitle: subtitle, imageUrl: imageUrl)
+    }
 }
 
-struct FeatureShowcaseItem: ShowcaseItem {
-    var title: String
-    var contentItems: [AnyContentItem]
+struct FeatureContentItem: ContentItem {
+    var id: String { return content.id }
+    static var cellType: ContentConfigurable.Type { return FeatureContentCell.self }
+
+    let content: FeaturableContentItem
+
+    init(_ content: FeaturableContentItem) {
+        self.content = content
+    }
+
+    static func ==(lhs: FeatureContentItem, rhs: FeatureContentItem) -> Bool {
+        return lhs.id == rhs.id
+    }
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(String(describing: type(of: content)))
+    }
 }
 
-protocol VideoCellConfigurable {
-    func setup(item: AnyContentItem)
+protocol ContentConfigurable: UICollectionViewCell {
+    func setup<C: ContentItem>(item: C)
 }
 
-protocol ShowcaseConfigurable {
-    func setup(item: ShowcaseItem)
+protocol ContentSectionProtocol {}
+struct ContentSection<C: ContentItem>: Hashable & ContentSectionProtocol {
+    let items: [AnyContentItem<C>]
+    static func section(items: [C]) -> ContentSection<C> {
+        return ContentSection(items: items.map { AnyContentItem($0) })
+    }
 }
 
-class ShowcaseCell: UITableViewCell {
-    var indexPath: IndexPath?
-    lazy var collectionView: UICollectionView = {
+class HorizontalScrollableCell<C: ContentItem>: UITableViewCell, UICollectionViewDelegate {
+    // The offset table for saving the offset for a specific indexpath. Note that the life cycle is the same as the cell
+    private struct CellCache {
+        var offsetTable: [IndexPath: CGPoint]
+        init() {
+            offsetTable = [:]
+        }
+    }
+
+    private struct Section: Hashable {
+    }
+
+    private var dataSource: UICollectionViewDiffableDataSource<Section, C>?
+
+    // Save the previous indexPath
+    private var indexPath: IndexPath?
+    private var cache: CellCache = CellCache()
+
+    private lazy var collectionView: UICollectionView = {
         let layout = UICollectionViewFlowLayout()
         layout.scrollDirection = .horizontal
         layout.estimatedItemSize = UICollectionViewFlowLayout.automaticSize
         let collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout).add(to: self.contentView, with: .zero)
-        collectionView.heightAnchor.constraint(equalToConstant: 200).isActive = true
-        collectionView.dataSource = self
-        collectionView.delegate = self
+        collectionView.heightAnchor.constraint(equalToConstant: 120).isActive = true
         collectionView.backgroundColor = .clear
-        collectionView.register(cellType: VideoTitleThumnailCell.self)
+        collectionView.register(cellType: C.cellType)
         return collectionView
     }()
 
-    static var offsetTable: [IndexPath: CGPoint] = [:]
+    private func createDataSource(collectionView: UICollectionView) -> UICollectionViewDiffableDataSource<Section, C> {
+        return UICollectionViewDiffableDataSource(collectionView: collectionView) { (collectionView, indexPath, item) -> UICollectionViewCell? in
+
+            if let cell = collectionView.dequeueReusableCell(withReuseIdentifier: C.cellType.uniqueCellIdentifier, for: indexPath) as? ContentConfigurable {
+                cell.setup(item: item)
+                return cell
+            } else {
+                assertionFailure("Unhanlded item: \(type(of: item))")
+                return UICollectionViewCell()
+            }
+        }
+    }
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        setupCollectionView()
+    }
+
+    private func setupCollectionView() {
+        dataSource = createDataSource(collectionView: collectionView)
+        collectionView.dataSource = dataSource
+        collectionView.delegate = self
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 
     override func prepareForReuse() {
         super.prepareForReuse()
         if let indexPath = self.indexPath {
-            ShowcaseCell.offsetTable[indexPath] = collectionView.contentOffset
+            cache.offsetTable[indexPath] = collectionView.contentOffset
         }
     }
 
-    private var contentItems: [AnyContentItem] = [] {
+    private var contentItems: [AnyContentItem<C>] = [] {
         didSet {
             // can be diff resource reload
-            collectionView.reloadData()
+            let snapshot = NSDiffableDataSourceSnapshot<Section, C>()
+            let section = Section()
+            let items = self.contentItems.map {$0.base}
+            snapshot.appendSections([section])
+            snapshot.appendItems(items, toSection: section)
+            dataSource?.apply(snapshot)
         }
     }
 
-    func setup(item: ShowcaseItem, for indexPath: IndexPath) {
+    func setup(group: ContentSection<C>, for indexPath: IndexPath) {
         self.indexPath = indexPath
-        self.contentItems = item.contentItems
+        self.contentItems = group.items
         adjustContentOffset()
     }
 
-
     private func adjustContentOffset() {
-        if let indexPath = indexPath, let contentOffset = ShowcaseCell.offsetTable[indexPath] {
+        if let indexPath = indexPath, let contentOffset = cache.offsetTable[indexPath] {
             collectionView.contentOffset = contentOffset
         }
     }
+
 }
 
-extension ShowcaseCell: UICollectionViewDataSource, UICollectionViewDelegate {
-    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-        return contentItems.count
+class BookTitleThumbnailCell: UICollectionViewCell, ContentConfigurable {
+
+    lazy var coverImageView: UIImageView = {
+        return UIImageView.configure(to: self.contentView) { (imageView) in
+            imageView.contentMode = .scaleAspectFill
+            [imageView.widthAnchor.constraint(equalToConstant: 80),
+             imageView.heightAnchor.constraint(equalToConstant: 120)].activate()
+        }()
+    }()
+
+    override init(frame: CGRect) {
+        super.init(frame: .zero)
+        setupConstraint()
     }
 
-    func numberOfSections(in collectionView: UICollectionView) -> Int {
-        return 1
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 
-    func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
-        if let cell = collectionView.dequeueReusableCell(withReuseIdentifier: VideoTitleThumnailCell.uniqueCellIdentifier, for: indexPath) as? VideoTitleThumnailCell {
-            cell.setup(item: contentItems[indexPath.row])
-            return cell
-        } else {
-            assert(false)
-            return UICollectionViewCell()
+    private func setupConstraint() {
+        coverImageView.constraints(to: contentView).activate()
+    }
+
+    func setup<C>(item: C) where C : ContentItem {
+        if let item = item as? BookContentItem {
+            coverImageView.setupImage(url: item.imageUrl)
         }
     }
 }
 
-class VideoTitleThumnailCell: UICollectionViewCell, VideoCellConfigurable {
+class VideoTitleThumnailCell: UICollectionViewCell, ContentConfigurable {
     lazy var titleLabel: UILabel = UILabel.configure(to: self.contentView) { (label) in
         label.font = UIFont.systemFont(ofSize: 18)
+        label.textColor = .white
+        label.backgroundColor = UIColor.gray.withAlphaComponent(0.7)
         label.numberOfLines = 0
     }()
 
@@ -177,60 +243,55 @@ class VideoTitleThumnailCell: UICollectionViewCell, VideoCellConfigurable {
 
     func setupLayout() {
         NSLayoutConstraint.activate([
-            coverImageView.heightAnchor.constraint(equalToConstant: 200),
-            coverImageView.widthAnchor.constraint(equalToConstant: 200),
-
-            titleLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -5),
-            titleLabel.leftAnchor.constraint(equalTo: contentView.leftAnchor, constant: 5),
-            titleLabel.rightAnchor.constraint(equalTo: contentView.rightAnchor, constant: -5)
+            coverImageView.heightAnchor.constraint(equalToConstant: 120),
+            coverImageView.widthAnchor.constraint(equalToConstant: 120),
             ])
-        NSLayoutConstraint.activate(coverImageView.constraint(to: contentView, padding: .zero))
+        titleLabel.constraints(to: contentView, left: 0, bottom: 0, right: 0).activate()
+        coverImageView.constraints(to: contentView).activate()
     }
 
-    func setup(item: AnyContentItem) {
-        titleLabel.text = item.title
-        coverImageView.setupImage(url: item.imageUrl)
+    func setup(item: AnyContentItem<VideoContentItem>) {
+        titleLabel.text = item.base.title
+        coverImageView.setupImage(url: item.base.imageUrl)
+    }
+    func setup<C>(item: C) where C : ContentItem {
+        if let item = item as? VideoContentItem {
+            titleLabel.text = item.title
+            coverImageView.setupImage(url: item.imageUrl)
+        }
     }
 }
 
-class VideoTitleContentCell: UITableViewCell, VideoCellConfigurable {
-    lazy var titleLabel: UILabel = {
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        self.contentView.addSubview(label)
-        return label
+class FeatureContentCell: UICollectionViewCell, ContentConfigurable {
+    lazy var titleLabel: UILabel = UILabel.configure(to: self.contentView) { (label) in
+        label.font = UIFont.systemFont(ofSize: 12)
+        label.backgroundColor = UIColor.black.withAlphaComponent(0.3)
+        label.textColor = .white
     }()
-    lazy var subtitleLabel: UILabel = {
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        self.contentView.addSubview(label)
-        return label
+
+    lazy var subtitleLabel: UILabel = UILabel.configure(to: self.contentView) { (label) in
+        label.font = UIFont.systemFont(ofSize: 10)
+        label.backgroundColor = UIColor.black.withAlphaComponent(0.3)
+        label.textColor = .lightGray
     }()
-    lazy var coverImageView: UIImageView = {
-        let imageView: UIImageView = UIImageView()
-        imageView.translatesAutoresizingMaskIntoConstraints = false
+
+    lazy var coverImageView: UIImageView = UIImageView.configure(to: self.contentView) { (imageView) in
         imageView.contentMode = .scaleAspectFill
         imageView.clipsToBounds = true
-        self.contentView.addSubview(imageView)
-        return imageView
     }()
-    func setupLayout() {
-        NSLayoutConstraint.activate([
-            titleLabel.leftAnchor.constraint(equalTo: coverImageView.rightAnchor, constant: 10),
-            titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 15),
 
-            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 10),
-            subtitleLabel.leftAnchor.constraint(equalTo: coverImageView.rightAnchor, constant: 10),
-
-            coverImageView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 15),
-            coverImageView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -15),
-            coverImageView.heightAnchor.constraint(equalToConstant: 90),
-            coverImageView.widthAnchor.constraint(equalToConstant: 120)
-            ])
+    private func setupLayout() {
+        coverImageView.constraints(to: contentView).activate()
+        titleLabel.constraints(to: contentView, left: 0, right: 0).activate()
+        subtitleLabel.constraints(to: contentView, left: 0, bottom: 0, right: 0).activate()
+        [subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 0),
+         coverImageView.widthAnchor.constraint(equalToConstant: 200),
+         coverImageView.heightAnchor.constraint(equalToConstant: 120)
+        ].activate()
     }
 
-    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
-        super.init(style: style, reuseIdentifier: reuseIdentifier)
+    override init(frame: CGRect) {
+        super.init(frame: .zero)
         setupLayout()
     }
 
@@ -239,41 +300,62 @@ class VideoTitleContentCell: UITableViewCell, VideoCellConfigurable {
     }
 
     /* ======= Setup view with model ======== */
-    func setup(item: ContentItem) {
-        titleLabel.text = item.title
-        subtitleLabel.text = item.subtitle
-        coverImageView.setupImage(url: item.imageUrl)
+    func setup<C>(item: C) where C : ContentItem {
+
+        if let item = item as? FeatureContentItem {
+            if let content = item.content as? VideoContentItem {
+                titleLabel.text = "V: \(content.title)"
+                subtitleLabel.text = content.subtitle
+                coverImageView.setupImage(url: content.imageUrl)
+
+            } else if let content = item.content as? BookContentItem {
+                titleLabel.text = "B: \(content.title)"
+                subtitleLabel.text = content.subtitle
+                coverImageView.setupImage(url: content.imageUrl)
+            } else {
+                assertionFailure("Unhandled item type \(type(of: item))")
+            }
+        } else {
+            assertionFailure("Unhandled item type \(type(of: item))")
+        }
     }
 }
 
-enum Section {
-    case feature
-    case showcase
-}
+class HomeViewController: UIViewController, UITableViewDataSource {
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return rows.count
+    }
 
-extension TitleContentItem: HomeContentItem {}
-extension FeatureShowcaseItem: HomeContentItem {}
-class MyViewController : UIViewController {
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let item = rows[indexPath.row]
 
-    private lazy var dataSource: UITableViewDiffableDataSource<Section, TitleContentItem> = {
-        return UITableViewDiffableDataSource<Section, TitleContentItem>(tableView: self.tableView) { (tableView, indexPath, item) -> UITableViewCell? in
-            let cell = tableView.dequeueReusableCell(withIdentifier: VideoTitleContentCell.uniqueCellIdentifier, for: indexPath)
-            if let cell = cell as? VideoCellConfigurable {
-                cell.setup(item: item)
-            }
+        if let item = item as? ContentSection<FeatureContentItem>,
+            let cell = tableView.dequeueReusableCell(withIdentifier: HorizontalScrollableCell<FeatureContentItem>.uniqueCellIdentifier, for: indexPath) as? HorizontalScrollableCell<FeatureContentItem> {
+            cell.setup(group: item, for: indexPath)
             return cell
+        } else if let item = item as? ContentSection<VideoContentItem>, let cell = tableView.dequeueReusableCell(withIdentifier: HorizontalScrollableCell<VideoContentItem>.uniqueCellIdentifier, for: indexPath) as? HorizontalScrollableCell<VideoContentItem> {
+            cell.setup(group: item, for: indexPath)
+            return cell
+        } else if let item = item as? ContentSection<BookContentItem>, let cell = tableView.dequeueReusableCell(withIdentifier: HorizontalScrollableCell<BookContentItem>.uniqueCellIdentifier, for: indexPath) as? HorizontalScrollableCell<BookContentItem> {
+            cell.setup(group: item, for: indexPath)
+            return cell
+        } else {
+            assertionFailure("Unhandled type \(type(of: item))")
+            return UITableViewCell()
         }
-    }()
+    }
+
     private lazy var tableView: UITableView = {
         let tableView = UITableView(frame: .zero, style: .plain)
         tableView.translatesAutoresizingMaskIntoConstraints = false
-        tableView.register(cellType: VideoTitleContentCell.self)
-        tableView.register(cellType: ShowcaseCell.self)
+        tableView.register(cellType: HorizontalScrollableCell<FeatureContentItem>.self)
+        tableView.register(cellType: HorizontalScrollableCell<VideoContentItem>.self)
+        tableView.register(cellType: HorizontalScrollableCell<BookContentItem>.self)
         self.view.addSubview(tableView)
         return tableView
     }()
 
-    var items: [HomeContentItem] = [] {
+    var rows: [ContentSectionProtocol] = [] {
         didSet {
             tableView.reloadData()
         }
@@ -284,77 +366,39 @@ class MyViewController : UIViewController {
         view.backgroundColor = .white
         setupLayout()
 
-        tableView.dataSource = dataSource
+        tableView.dataSource = self
 
-        items = [
-            TitleContentItem(title: "Your name", subtitle: "This summer's blockbuster", imageUrl: "https://contentserver.com.au/assets/525768_gnau_yourname_p_v7_aa.jpg"),
-            TitleContentItem(title: "Pulp Fiction", subtitle: "Best movie in 1993", imageUrl: "http://barkerhost.com/wp-content/uploads/sites/4/2015/11/dM2w364MScsjFf8pfMbaWUcWrR-0.jpg"),
-            FeatureShowcaseItem(title: "Top ranking", contentItems: [
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/60561/winter-snow-nature-60561.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/869258/pexels-photo-869258.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/688660/pexels-photo-688660.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/289649/pexels-photo-289649.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/1571442/pexels-photo-1571442.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/839462/pexels-photo-839462.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/1366919/pexels-photo-1366919.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/908644/pexels-photo-908644.jpeg?auto=compress&cs=tinysrgb&h=350")
-                ]),
-            FeatureShowcaseItem(title: "title2", contentItems: [
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/355403/pexels-photo-355403.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/54200/pexels-photo-54200.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/269370/pexels-photo-269370.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/258112/pexels-photo-258112.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/89773/wolf-wolves-snow-wolf-landscape-89773.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/287229/pexels-photo-287229.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/66284/winter-nature-season-trees-66284.jpeg?auto=compress&cs=tinysrgb&h=350")
-                ]),
-            FeatureShowcaseItem(title: "Top ranking", contentItems: [
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/60561/winter-snow-nature-60561.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/869258/pexels-photo-869258.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/688660/pexels-photo-688660.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/289649/pexels-photo-289649.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/1571442/pexels-photo-1571442.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/839462/pexels-photo-839462.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/1366919/pexels-photo-1366919.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/908644/pexels-photo-908644.jpeg?auto=compress&cs=tinysrgb&h=350")
-                ]),
-            FeatureShowcaseItem(title: "title2", contentItems: [
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/355403/pexels-photo-355403.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/54200/pexels-photo-54200.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/269370/pexels-photo-269370.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/258112/pexels-photo-258112.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/89773/wolf-wolves-snow-wolf-landscape-89773.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/287229/pexels-photo-287229.jpeg?auto=compress&cs=tinysrgb&h=350"),
-                TitleContentItem(title: "Test", subtitle: "Sub String", imageUrl: "https://images.pexels.com/photos/66284/winter-nature-season-trees-66284.jpeg?auto=compress&cs=tinysrgb&h=350")
-                ])
+        let demoVideoItems = (0..<10).map {
+            return VideoContentItem(id: "\($0)", title: "Video", subtitle: "Sub", imageUrl: VideoContentItem.randsomVideoImageUrl())
+        }
+
+        let demoBookItems = (0..<10).map {
+                return BookContentItem(id: "\($0)", title: "Animal Farm \($0)", subtitle: "Book sub title", imageUrl: BookContentItem.randomBookImageUrl())
+            }
+
+        let featureItems: [FeatureContentItem] = [
+            FeatureContentItem(demoVideoItems[0]),
+            FeatureContentItem(demoBookItems[1]),
+            FeatureContentItem(demoVideoItems[1]),
+            FeatureContentItem(demoVideoItems[2]),
+            FeatureContentItem(demoBookItems[3])
         ]
 
-        let snapshot = NSDiffableDataSourceSnapshot<Section, TitleContentItem>()
+        let featureSectionItems = ContentSection<FeatureContentItem>.section(items: featureItems)
+        let editorSelectVideoItems = ContentSection<VideoContentItem>.section(items: demoVideoItems)
+        let editorSelectBookItems = ContentSection<BookContentItem>.section(items: demoBookItems)
 
-        snapshot.appendItems([items], toSection: .showcase))
-        snapshot.appendItems(users)
-
-        dataSource.apply(snapshot)
-
-        /* ===== get data from remote and apply it to the model */
-
+        self.rows = [
+            featureSectionItems,
+            editorSelectVideoItems,
+            editorSelectBookItems
+        ]
     }
 
-    func setupLayout() {
-        NSLayoutConstraint.activate([
-            tableView.topAnchor.constraint(equalTo: view.topAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            tableView.leftAnchor.constraint(equalTo: view.leftAnchor),
-            tableView.rightAnchor.constraint(equalTo: view.rightAnchor)
-            ])
+    private func setupLayout() {
+        tableView.constraints(to: view).activate()
     }
 
-}
-
-extension MyViewController: UITableViewDataSourcePrefetching {
-    func tableView(_ tableView: UITableView, prefetchRowsAt indexPaths: [IndexPath]) {
-
-    }
 }
 
 protocol PagingControllerProtocol {
@@ -364,5 +408,29 @@ protocol PagingControllerProtocol {
 
 }
 
+extension BookContentItem {
+    static func randomBookImageUrl() -> String {
+        return [
+            "https://pictures.abebooks.com/isbn/9789381607794-uk.jpg",
+            "https://kbimages1-a.akamaihd.net/9a13e8d8-2349-404b-83ab-f388807ff945/353/569/90/False/animal-farm-55.jpg",
+            "https://upload.wikimedia.org/wikipedia/en/0/08/We_first_ed_dust_jacket.jpg",
+            "https://upload.wikimedia.org/wikipedia/en/6/62/BraveNewWorld_FirstEdition.jpg"
+        ].randomElement()!
+    }
+}
+
+extension VideoContentItem {
+    static func randsomVideoImageUrl() -> String {
+        return [
+            "https://m.media-amazon.com/images/M/MV5BMDFkYTc0MGEtZmNhMC00ZDIzLWFmNTEtODM1ZmRlYWMwMWFmXkEyXkFqcGdeQXVyMTMxODk2OTU@._V1_UX182_CR0,0,182,268_AL_.jpg",
+            "https://m.media-amazon.com/images/M/MV5BM2MyNjYxNmUtYTAwNi00MTYxLWJmNWYtYzZlODY3ZTk3OTFlXkEyXkFqcGdeQXVyNzkwMjQ5NzM@._V1_SY1000_CR0,0,704,1000_AL_.jpg",
+            "https://m.media-amazon.com/images/M/MV5BMTMxNTMwODM0NF5BMl5BanBnXkFtZTcwODAyMTk2Mw@@._V1_SY1000_CR0,0,675,1000_AL_.jpg",
+            "https://images.pexels.com/photos/289649/pexels-photo-289649.jpeg?auto=compress&cs=tinysrgb&h=350",
+            "https://m.media-amazon.com/images/M/MV5BNGNhMDIzZTUtNTBlZi00MTRlLWFjM2ItYzViMjE3YzI5MjljXkEyXkFqcGdeQXVyNzkwMjQ5NzM@._V1_SY1000_CR0,0,686,1000_AL_.jpg",
+            "https://m.media-amazon.com/images/M/MV5BNDE4OTMxMTctNmRhYy00NWE2LTg3YzItYTk3M2UwOTU5Njg4XkEyXkFqcGdeQXVyNjU0OTQ0OTY@._V1_SY1000_CR0,0,666,1000_AL_.jpg",
+        ].randomElement()!
+    }
+}
+
 // Present the view controller in the Live View window
-PlaygroundPage.current.liveView = MyViewController()
+PlaygroundPage.current.liveView = HomeViewController()
