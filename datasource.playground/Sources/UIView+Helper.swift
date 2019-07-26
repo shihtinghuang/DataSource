@@ -79,3 +79,28 @@ public extension Array where Element: NSLayoutConstraint {
         self.forEach { $0.isActive = false }
     }
 }
+
+
+// MARK: CollectionView Autolayout
+struct CollectionViewCellLayoutAssociateKey {
+    static var widthKey: String = "CollectionViewCellLayoutAssociateKey.width"
+}
+public extension UICollectionViewCell {
+    private var widthConstraint: NSLayoutConstraint? {
+        get {
+            return objc_getAssociatedObject(self, &CollectionViewCellLayoutAssociateKey.widthKey) as? NSLayoutConstraint
+        }
+        set {
+            objc_setAssociatedObject(self, &CollectionViewCellLayoutAssociateKey.widthKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        }
+    }
+    func setupWidthConstraint(constant: CGFloat) {
+        if let widthConstraint = widthConstraint {
+            widthConstraint.constant = constant
+        } else {
+            self.widthConstraint = contentView.widthAnchor.constraint(equalToConstant: constant)
+            self.widthConstraint?.isActive = true
+        }
+    }
+}
+
